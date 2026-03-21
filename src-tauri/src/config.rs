@@ -61,8 +61,62 @@ pub fn to_map(lines: &[Line]) -> HashMap<String, String> {
         .collect()
 }
 
-/// Update or insert a key. Existing entry is updated in-place; new entries appended.
-pub fn upsert(lines: &mut Vec<Line>, key: &str, value: &str) {
+/// Map schema category id to the Chinese section name used in the config file.
+fn category_to_section_name(category: &str) -> &'static str {
+    match category {
+        "font"       => "字体",
+        "appearance" => "外观",
+        "window"     => "窗口",
+        "terminal"   => "终端行为",
+        "mouse"      => "鼠标",
+        "clipboard"  => "剪贴板",
+        "macos"      => "macOS",
+        _            => "其他",
+    }
+}
+
+/// Returns true if the line looks like a section header (e.g. `# ── 字体 ───…`).
+fn is_section_header(line: &Line) -> bool {
+    matches!(line, Line::Comment(s) if s.contains("── "))
+}
+
+/// Find the position at which to insert lines at the end of a named section.
+/// Inserts before any trailing blank lines that separate sections.
+fn find_section_insert_pos(lines: &[Line], section_name: &str) -> Option<usize> {
+    // Find the header line for this section
+    let header_idx = lines.iter().position(|l| {
+        matches!(l, Line::Comment(s) if s.contains(&format!("── {}", section_name)))
+    })?;
+
+    // Find the start of the next section (or EOF)
+    let next_section = lines[header_idx + 1..]
+        .iter()
+        .position(|l| is_section_header(l))
+        .map(|i| header_idx + 1 + i)
+        .unwrap_or(lines.len());
+
+    // Walk back past trailing blank lines so we insert inside the section
+    let mut pos = next_section;
+    while pos > header_idx + 1 && matches!(lines.get(pos - 1), Some(Line::Empty)) {
+        pos -= 1;
+    }
+    Some(pos)
+}
+
+/// Update or insert a key with schema metadata.
+/// - If the key already exists anywhere in the file, it is updated in-place
+///   and its surrounding comments are left untouched.
+/// - If the key is new, it is inserted at the end of its category section
+///   preceded by a description comment.  If the section does not exist yet,
+///   a new section block is appended at the end of the file.
+pub fn upsert_structured(
+    lines: &mut Vec<Line>,
+    key: &str,
+    value: &str,
+    category: &str,
+    description: &str,
+) {
+    // Update in-place when the key already exists
     for line in lines.iter_mut() {
         if let Line::Entry { key: k, value: v } = line {
             if k == key {
@@ -71,10 +125,36 @@ pub fn upsert(lines: &mut Vec<Line>, key: &str, value: &str) {
             }
         }
     }
-    lines.push(Line::Entry {
-        key: key.to_string(),
-        value: value.to_string(),
-    });
+
+    // New key — place it inside the right section
+    let section_name = category_to_section_name(category);
+
+    if let Some(pos) = find_section_insert_pos(lines, section_name) {
+        // If the section already has content (not just the header), add a blank separator
+        let needs_blank = pos > 0 && !matches!(lines.get(pos - 1), Some(Line::Empty));
+        let mut offset = 0;
+        if needs_blank {
+            lines.insert(pos, Line::Empty);
+            offset += 1;
+        }
+        if !description.is_empty() {
+            lines.insert(pos + offset, Line::Comment(format!("# {}", description)));
+            lines.insert(pos + offset + 1, Line::Entry { key: key.to_string(), value: value.to_string() });
+        } else {
+            lines.insert(pos + offset, Line::Entry { key: key.to_string(), value: value.to_string() });
+        }
+    } else {
+        // Section not found — create it at the end of the file
+        if !matches!(lines.last(), Some(Line::Empty)) {
+            lines.push(Line::Empty);
+        }
+        let pad = "─".repeat(60usize.saturating_sub(section_name.chars().count() + 4));
+        lines.push(Line::Comment(format!("# ── {} {}", section_name, pad)));
+        if !description.is_empty() {
+            lines.push(Line::Comment(format!("# {}", description)));
+        }
+        lines.push(Line::Entry { key: key.to_string(), value: value.to_string() });
+    }
 }
 
 pub fn load() -> Result<Vec<Line>, String> {

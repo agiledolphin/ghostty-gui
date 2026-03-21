@@ -139,10 +139,16 @@ fn load_config() -> Result<HashMap<String, String>, String> {
 #[tauri::command]
 fn save_config(entries: HashMap<String, String>) -> Result<(), String> {
     let mut lines = config::load().unwrap_or_default();
+    let schema = schema::get_schema();
     for (key, value) in &entries {
         // Skip empty values — treat as "unset" (don't write to file)
         if !value.is_empty() {
-            config::upsert(&mut lines, key, value);
+            let (category, description) = schema
+                .iter()
+                .find(|f| f.key == *key)
+                .map(|f| (f.category.as_str(), f.description.as_str()))
+                .unwrap_or(("misc", ""));
+            config::upsert_structured(&mut lines, key, value, category, description);
         }
     }
     config::save(&lines)
