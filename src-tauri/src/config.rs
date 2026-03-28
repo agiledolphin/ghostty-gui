@@ -117,13 +117,24 @@ pub fn upsert_structured(
     description: &str,
 ) {
     // Update in-place when the key already exists
-    for line in lines.iter_mut() {
-        if let Line::Entry { key: k, value: v } = line {
-            if k == key {
-                *v = value.to_string();
-                return;
-            }
+    if let Some(idx) = lines.iter().position(|l| matches!(l, Line::Entry { key: k, .. } if k == key)) {
+        // Update the value
+        if let Line::Entry { value: v, .. } = &mut lines[idx] {
+            *v = value.to_string();
         }
+        // Sync the description comment directly above the entry
+        if !description.is_empty() {
+            if idx > 0 && !is_section_header(&lines[idx - 1]) {
+                if let Line::Comment(_) = &lines[idx - 1] {
+                    // Replace the existing comment with the current schema description
+                    lines[idx - 1] = Line::Comment(format!("# {}", description));
+                    return;
+                }
+            }
+            // No description comment yet — insert one right above the entry
+            lines.insert(idx, Line::Comment(format!("# {}", description)));
+        }
+        return;
     }
 
     // New key — place it inside the right section
